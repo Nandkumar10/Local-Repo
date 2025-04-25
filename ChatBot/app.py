@@ -1,33 +1,63 @@
-from langchain_community.llms import Ollama
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
 import streamlit as st
 import os
-from dotenv import load_dotenv
+from langchain_groq import ChatGroq
+from langchain_community.llms import Ollama
+from langchain_community.document_loaders import WebBaseLoader
+from langchain.embeddings import OllamaEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.chains import create_retrieval_chain
+from langchain_community.vectorstores import FAISS
+import time
 
+from dotenv import load_dotenv
 load_dotenv()
 
-os.environ['LANGCHAIN_API_KEY'] = os.getenv('LANGCHAIN_API_KEY')
-os.environ['LANGCHAIN_TRACING_V2'] = 'true' 
+## load the Groq API key
+os.environ['GROQ_API_KEY'] = os.getenv('GROQ_API_KEY')
 
-##prompt Templet
 
-prompt = ChatPromptTemplate(
-        [
-                ('system','You are a helpful assistant. Please response to the user queries'),
-                ('user','Question:{question}')
-        ]
+if "vector" not in st.session_state:
+    st.session_state.embeddings = OllamaEmbeddings(model='mxbai-embed-large:latest')
+    st.session_state.loader = WebBaseLoader("https://docs.smith.langchain.com/")
+    st.session_state.docs = st.session_state.loader.load()
+
+    st.session_state.text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    st.session_state.final_documents = st.session_state.text_splitter.split_documents(st.session_state.docs[:50])
+    st.session_state.vectors = FAISS.from_documents(st.session_state.final_documents, st.session_state.embeddings)
+
+st.title("ChatGroq Demo")
+
+llm = ChatGroq(model_name="llama3-8b-8192",groq_api_key= os.getenv('GROQ_API_KEY'))#groq_api_key=groq_api_key,
+#llm = Ollama(model ='gemma3:1b')
+
+prompt = ChatPromptTemplate.from_template(
+"""
+Answer the questions based on the provided context only.
+Please provide the most accurate response based on the question
+<context>
+{context}
+</context>
+Questions:{input}
+"""
 )
-#Streamlit Framework
 
-st.title('Langchain Demo with Ollama')
-input_text = st.text_input('Search the topic you want')
+document_chain = create_stuff_documents_chain(llm, prompt)
+retriever = st.session_state.vectors.as_retriever()
+retrieval_chain = create_retrieval_chain(retriever, document_chain)
 
-##Ollama gemma:2b Model
+prompt = st.text_input("Input you prompt here")
 
-llm = Ollama(model = 'gemma:2b')
-output_preser = StrOutputParser()
-chain = prompt|llm|output_preser
+if prompt:
+    start = time.process_time()
+    response = retrieval_chain.invoke({"input": prompt})
+    print("Response time :", time.process_time() - start)
+    st.write(response["answer"])
 
-if input_text:
-        st.write(chain.invoke({'question':input_text}))
+    # With a streamlit expander
+    with st.expander("Document Similarity Search"):
+        # Find the relevant chunks
+        for i, doc in enumerate(response["context"]):
+                st.write(doc.page_content)
+                st.write("--------------------------------")
